@@ -23,7 +23,7 @@
                 <h1 class="text-xl font-bold text-white">Support Log</h1>
                 <p id="onlineStatus" class="text-[10px] text-gray-400 uppercase tracking-widest font-bold">Iniciando sistema...</p>
             </div>
-            <div class="text-[10px] text-indigo-400 font-mono bg-indigo-500/10 px-2 py-1 rounded">V3.4 - OPTIMIZED</div>
+            <div class="text-[10px] text-indigo-400 font-mono bg-indigo-500/10 px-2 py-1 rounded">V3.5 - RECOVERY MODE</div>
         </header>
 
         <div class="glass-panel rounded-2xl p-5 space-y-4 shadow-xl">
@@ -102,11 +102,11 @@
             const isLocal = window.location.protocol === 'file:';
             
             if (apiKey && apiKey.startsWith("AIza")) {
-                status.innerText = isLocal ? "● Modo Local (Posibles errores CORS)" : "● IA Conectada & Lista (Online)";
+                status.innerText = isLocal ? "● Modo Local (Problemas de Red Local)" : "● IA Conectada & Lista (Online)";
                 status.className = isLocal ? "text-[10px] text-amber-400 uppercase tracking-widest font-bold" : "text-[10px] text-emerald-400 uppercase tracking-widest font-bold";
             } else {
                 status.innerText = "⚠ Error de API Key";
-                status.className = "text-[10px] text-amber-500 uppercase tracking-widest font-bold";
+                status.className = "text-[10px] text-red-500 uppercase tracking-widest font-bold";
             }
         }
 
@@ -132,70 +132,77 @@
             if(!activity) return alert("Por favor, escribe la actividad realizada.");
 
             btn.disabled = true;
-            btn.innerHTML = `<div class="spinner"></div> Procesando...`;
+            btn.innerHTML = `<div class="spinner"></div> Conectando con IA...`;
 
             try {
-                // Time-out manual de 12 segundos para la petición
+                // Timeout de 15 segundos
                 const translatedText = await Promise.race([
                     translateWithRetry(activity),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error("TIMEOUT")), 12000))
+                    new Promise((_, reject) => setTimeout(() => reject(new Error("TIMEOUT")), 15000))
                 ]);
 
                 renderFinalReport(translatedText);
                 document.getElementById('resultBox').classList.remove('hidden');
                 window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
             } catch (e) {
-                console.error("Error en la operación:", e);
-                // Si falla o hay timeout, usamos el texto original
+                console.error("Error detectado:", e);
                 renderFinalReport(activity);
                 document.getElementById('resultBox').classList.remove('hidden');
                 
-                const msg = e.message === "TIMEOUT" ? "Tiempo de espera agotado." : "Error de conexión con la IA.";
-                alert(msg + " Se ha generado el reporte con el texto original.");
+                let msg = "Error de conexión con la IA.";
+                if (e.message === "TIMEOUT") msg = "La conexión tardó demasiado.";
+                if (e.message.includes("403")) msg = "Error de permisos (API Key).";
+                if (e.message.includes("429")) msg = "Demasiadas peticiones. Espera un momento.";
+                
+                alert(msg + " Generando reporte con texto original.");
             } finally {
                 btn.disabled = false;
                 btn.innerText = "Generar Reporte en Inglés";
             }
         }
 
-        async function translateWithRetry(text, retries = 3) {
-            let delay = 1500;
-            for (let i = 0; i < retries; i++) {
+        async function translateWithRetry(text, retries = 2) {
+            let delay = 2000;
+            for (let i = 0; i <= retries; i++) {
                 try {
                     return await translateText(text);
                 } catch (err) {
-                    console.warn(`Intento ${i + 1} fallido, reintentando...`);
-                    if (i === retries - 1) throw err;
+                    if (i === retries) throw err;
+                    console.log(`Reintento ${i + 1} en curso...`);
                     await new Promise(res => setTimeout(res, delay));
-                    delay *= 1.5;
+                    delay *= 2;
                 }
             }
         }
 
         async function translateText(text) {
+            // Usando v1beta para mayor compatibilidad
             const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
             
             const response = await fetch(url, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 
+                    'Content-Type': 'application/json'
+                },
                 body: JSON.stringify({
-                    contents: [{ parts: [{ text: `Translate the following technical support activity to professional English. Return ONLY the translated text: "${text}"` }] }],
+                    contents: [{ parts: [{ text: `Act as a technical translator. Translate strictly to professional English: "${text}". Only return the translation.` }] }],
                     generationConfig: {
                         temperature: 0.1,
-                        maxOutputTokens: 500
+                        topP: 0.8,
+                        maxOutputTokens: 1000
                     }
                 })
             });
 
             if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.error?.message || "HTTP_" + response.status);
+                const errJson = await response.json().catch(() => ({}));
+                throw new Error(errJson.error?.message || response.status);
             }
             
             const data = await response.json();
             const translated = data.candidates?.[0]?.content?.parts?.[0]?.text;
             
-            if (!translated) throw new Error("EMPTY_DATA");
+            if (!translated) throw new Error("Respuesta vacía de la IA.");
             return translated.trim();
         }
 
@@ -225,24 +232,26 @@
 
         function copyText() {
             const text = document.getElementById('outputText').textContent;
-            navigator.clipboard.writeText(text).then(() => {
-                const btn = document.querySelector('[onclick="copyText()"]');
-                const original = btn.innerText;
-                btn.innerText = "¡Copiado!";
+            const btn = document.querySelector('[onclick="copyText()"]');
+            
+            // Método compatible con Canvas e iFrames
+            const textArea = document.createElement("textarea");
+            textArea.value = text;
+            document.body.appendChild(textArea);
+            textArea.select();
+            try {
+                document.execCommand('copy');
+                const originalText = btn.innerText;
+                btn.innerText = "¡Copiado con éxito!";
                 btn.classList.replace('bg-emerald-600', 'bg-blue-600');
                 setTimeout(() => {
-                    btn.innerText = original;
+                    btn.innerText = originalText;
                     btn.classList.replace('bg-blue-600', 'bg-emerald-600');
                 }, 2000);
-            }).catch(err => {
-                const temp = document.createElement("textarea");
-                temp.value = text;
-                document.body.appendChild(temp);
-                temp.select();
-                document.execCommand('copy');
-                document.body.removeChild(temp);
-                alert("¡Copiado!");
-            });
+            } catch (err) {
+                console.error('Error al copiar', err);
+            }
+            document.body.removeChild(textArea);
         }
     </script>
 </body>
