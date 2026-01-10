@@ -23,7 +23,7 @@
                 <h1 class="text-xl font-bold text-white">Support Log</h1>
                 <p id="onlineStatus" class="text-[10px] text-gray-400 uppercase tracking-widest font-bold">Iniciando sistema...</p>
             </div>
-            <div class="text-[10px] text-indigo-400 font-mono bg-indigo-500/10 px-2 py-1 rounded">V3.3 - STABLE</div>
+            <div class="text-[10px] text-indigo-400 font-mono bg-indigo-500/10 px-2 py-1 rounded">V3.4 - OPTIMIZED</div>
         </header>
 
         <div class="glass-panel rounded-2xl p-5 space-y-4 shadow-xl">
@@ -132,20 +132,26 @@
             if(!activity) return alert("Por favor, escribe la actividad realizada.");
 
             btn.disabled = true;
-            btn.innerHTML = `<div class="spinner"></div> Traduciendo...`;
-
-            let textToUse = activity;
+            btn.innerHTML = `<div class="spinner"></div> Procesando...`;
 
             try {
-                textToUse = await translateWithRetry(activity);
-                renderFinalReport(textToUse);
+                // Time-out manual de 12 segundos para la petición
+                const translatedText = await Promise.race([
+                    translateWithRetry(activity),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error("TIMEOUT")), 12000))
+                ]);
+
+                renderFinalReport(translatedText);
                 document.getElementById('resultBox').classList.remove('hidden');
                 window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
             } catch (e) {
-                console.error("Error en traducción:", e);
+                console.error("Error en la operación:", e);
+                // Si falla o hay timeout, usamos el texto original
                 renderFinalReport(activity);
                 document.getElementById('resultBox').classList.remove('hidden');
-                alert("La IA no respondió a tiempo. Se ha generado el reporte con el texto original en español.");
+                
+                const msg = e.message === "TIMEOUT" ? "Tiempo de espera agotado." : "Error de conexión con la IA.";
+                alert(msg + " Se ha generado el reporte con el texto original.");
             } finally {
                 btn.disabled = false;
                 btn.innerText = "Generar Reporte en Inglés";
@@ -153,14 +159,15 @@
         }
 
         async function translateWithRetry(text, retries = 3) {
-            let delay = 1000;
+            let delay = 1500;
             for (let i = 0; i < retries; i++) {
                 try {
                     return await translateText(text);
                 } catch (err) {
+                    console.warn(`Intento ${i + 1} fallido, reintentando...`);
                     if (i === retries - 1) throw err;
                     await new Promise(res => setTimeout(res, delay));
-                    delay *= 2;
+                    delay *= 1.5;
                 }
             }
         }
@@ -172,11 +179,18 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    contents: [{ parts: [{ text: `Translate to technical English. Output ONLY the translation: "${text}"` }] }]
+                    contents: [{ parts: [{ text: `Translate the following technical support activity to professional English. Return ONLY the translated text: "${text}"` }] }],
+                    generationConfig: {
+                        temperature: 0.1,
+                        maxOutputTokens: 500
+                    }
                 })
             });
 
-            if (!response.ok) throw new Error("HTTP_" + response.status);
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error?.message || "HTTP_" + response.status);
+            }
             
             const data = await response.json();
             const translated = data.candidates?.[0]?.content?.parts?.[0]?.text;
