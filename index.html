@@ -41,7 +41,7 @@
         <div class="text-[10px] text-gray-400 p-2 bg-gray-700/50 rounded-lg flex justify-between items-center">
             <div class="flex items-center gap-2">
                 <span id="aiIndicator" class="w-2 h-2 rounded-full bg-yellow-500"></span>
-                <span id="aiStatus">Iniciando IA...</span>
+                <span id="aiStatus">Iniciando sistema...</span>
             </div>
             <div class="font-mono" id="authUserId">---</div>
         </div>
@@ -122,7 +122,7 @@
             <input type="text" id="newClientNameInput" placeholder="Nombre de la empresa" class="w-full p-3 border border-gray-600 rounded-xl bg-gray-700 text-white mb-4" />
             <div class="flex gap-2">
                 <button onclick="closeModal('addClientModal')" class="flex-1 py-2 bg-gray-600 text-white rounded-xl">Cancelar</button>
-                <button onclick="addNewClient()" class="flex-1 py-2 bg-green-600 text-white rounded-xl font-bold">Guardar</button>
+                <button id="saveClientBtn" onclick="addNewClient()" class="flex-1 py-2 bg-green-600 text-white rounded-xl font-bold">Guardar</button>
             </div>
         </div>
     </div>
@@ -135,42 +135,44 @@
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, onSnapshot, collection, addDoc, doc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        const apiKey = ""; // Entorno gestiona la llave
+        const apiKey = ""; 
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'report-app-4';
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
         
         let db, auth, userId, clients = [];
 
-        // Inicialización
+        // Inicialización Mejorada
         async function init() {
             try {
-                if (!firebaseConfig.apiKey) {
-                    throw new Error("Configuración de Firebase no disponible");
-                }
+                if (!firebaseConfig.apiKey) throw new Error("Configuración faltante");
                 
                 const app = initializeApp(firebaseConfig);
                 db = getFirestore(app);
                 auth = getAuth(app);
 
-                // Auth flow
+                // Esperar Auth
                 if (initialAuthToken) {
                     await signInWithCustomToken(auth, initialAuthToken);
                 } else {
                     await signInAnonymously(auth);
                 }
 
+                // Listener de estado
                 onAuthStateChanged(auth, (user) => {
                     if (user) {
                         userId = user.uid;
                         document.getElementById('authUserId').innerText = userId.substring(0, 8);
                         document.getElementById('aiIndicator').classList.replace('bg-yellow-500', 'bg-emerald-500');
+                        document.getElementById('aiIndicator').classList.replace('bg-red-500', 'bg-emerald-500');
                         document.getElementById('aiStatus').innerText = "Conectado";
                         loadClients();
+                    } else {
+                        document.getElementById('aiStatus').innerText = "Sin Sesión";
                     }
                 });
             } catch (e) {
-                console.error("Firebase Init Error:", e);
+                console.error("Critical Init Error:", e);
                 document.getElementById('aiStatus').innerText = "Error DB";
                 document.getElementById('aiIndicator').classList.replace('bg-yellow-500', 'bg-red-500');
             }
@@ -179,26 +181,28 @@
         function loadClients() {
             if (!userId) return;
             const ref = collection(db, 'artifacts', appId, 'public', 'data', 'clients');
+            
             onSnapshot(ref, (snap) => {
                 clients = [];
                 snap.forEach(doc => clients.push({ id: doc.id, ...doc.data() }));
                 updateClientSelect();
             }, (err) => {
-                console.error("Firestore Listen Error:", err);
-                showToast("Error al sincronizar clientes", "bg-red-600");
+                console.error("Firestore Error:", err);
+                showToast("Error de permisos DB", "bg-red-600");
             });
         }
 
         function updateClientSelect() {
-            clients.sort((a, b) => a.name.localeCompare(b.name));
+            clients.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
             const select = document.getElementById('accountSelect');
-            select.innerHTML = clients.map(c => `<option value="${c.name}">${c.name}</option>`).join('') || '<option value="" disabled>Añade un cliente</option>';
+            const options = clients.map(c => `<option value="${c.name}">${c.name}</option>`).join('');
+            select.innerHTML = options || '<option value="" disabled selected>Añade un cliente -> (+)</option>';
         }
 
-        // Traducción con Reintentos y Backoff
+        // Gemini API Implementation
         async function translateText(text, retries = 0) {
-            const delays = [1000, 2000, 4000, 8000, 16000];
-            const systemPrompt = "Translate this technical support task into professional English. Use bullet points if there are multiple steps. Be concise and use technical terminology. If the input is already in English, just proofread it. Return ONLY the translation.";
+            const delays = [1000, 2000, 4000];
+            const systemPrompt = "Translate this technical support task into professional English. Return ONLY the translation.";
             
             try {
                 const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
@@ -209,36 +213,28 @@
                         systemInstruction: { parts: [{ text: systemPrompt }] }
                     })
                 });
-
-                if (!response.ok) throw new Error("API Error");
                 const data = await response.json();
                 return data.candidates?.[0]?.content?.parts?.[0]?.text || text;
             } catch (err) {
-                if (retries < 5) {
+                if (retries < 3) {
                     await new Promise(r => setTimeout(r, delays[retries]));
                     return translateText(text, retries + 1);
                 }
-                throw err;
+                return text;
             }
         }
 
         window.generateReport = async () => {
             const activity = document.getElementById('activityInput').value.trim();
-            if (!activity) return showToast("Escribe la actividad", "bg-amber-500");
+            if (!activity) return showToast("Falta descripción", "bg-amber-500");
 
             const btn = document.getElementById('generateButton');
             const btnText = document.getElementById('generateButtonText');
             
             btn.disabled = true;
-            btnText.innerHTML = `<div class="spinner mr-2"></div> Traduciendo...`;
+            btnText.innerHTML = `<div class="spinner mr-2"></div> Procesando...`;
 
-            let finalActivity = activity;
-            try {
-                finalActivity = await translateText(activity);
-            } catch (e) {
-                showToast("Error de conexión. Usando texto original.", "bg-red-500");
-                finalActivity = `[Translation failed - Manual review required]\n${activity}`;
-            }
+            const finalActivity = await translateText(activity);
 
             renderReport(finalActivity);
             btn.disabled = false;
@@ -248,7 +244,7 @@
 
         function renderReport(text) {
             const date = document.getElementById('dateInput').value.split('-').reverse().join('/');
-            const client = document.getElementById('accountSelect').value;
+            const client = document.getElementById('accountSelect').value || "N/A";
             const sn = document.getElementById('snInput').value || "N/A";
             const start = document.getElementById('startTimeInput').value;
             const end = document.getElementById('endTimeInput').value;
@@ -274,18 +270,39 @@
             document.getElementById('generatedText').innerText = report;
         }
 
-        // Global functions
+        // Firestore Guardar con Reintento de Auth
         window.addNewClient = async () => {
-            const name = document.getElementById('newClientNameInput').value.trim();
-            if(!name || !userId) return;
+            const nameInput = document.getElementById('newClientNameInput');
+            const name = nameInput.value.trim();
+            const saveBtn = document.getElementById('saveClientBtn');
+
+            if(!name) return showToast("Escribe un nombre", "bg-amber-500");
+            
+            // Re-intentar obtener userId si es nulo
+            const activeUserId = auth.currentUser?.uid || userId;
+            if(!activeUserId) return showToast("Error: Sin conexión de usuario", "bg-red-600");
+
+            saveBtn.disabled = true;
+            saveBtn.innerText = "Guardando...";
+
             try {
-                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'clients'), {
-                    name, uid: userId, date: new Date().toISOString()
+                const clientsRef = collection(db, 'artifacts', appId, 'public', 'data', 'clients');
+                await addDoc(clientsRef, {
+                    name: name,
+                    uid: activeUserId,
+                    timestamp: new Date().getTime()
                 });
+                
+                nameInput.value = "";
                 closeModal('addClientModal');
-                document.getElementById('newClientNameInput').value = "";
-                showToast("Cliente guardado", "bg-green-600");
-            } catch(e) { showToast("Error al guardar", "bg-red-500"); }
+                showToast("¡Cliente guardado con éxito!", "bg-green-600");
+            } catch(e) {
+                console.error("Save error:", e);
+                showToast("Error de permisos en DB", "bg-red-500");
+            } finally {
+                saveBtn.disabled = false;
+                saveBtn.innerText = "Guardar";
+            }
         };
 
         window.copyToClipboard = () => {
@@ -296,7 +313,7 @@
             el.select();
             document.execCommand('copy');
             document.body.removeChild(el);
-            showToast("¡Copiado!", "bg-indigo-600");
+            showToast("¡Texto copiado!", "bg-indigo-600");
         };
 
         function showToast(msg, color) {
@@ -304,10 +321,13 @@
             if (!t) return;
             t.innerText = msg;
             t.className = `fixed bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full text-white text-sm font-bold shadow-2xl transition-all z-50 pointer-events-none ${color} opacity-100`;
-            setTimeout(() => t.classList.replace('opacity-100', 'opacity-0'), 2500);
+            setTimeout(() => t.classList.replace('opacity-100', 'opacity-0'), 3000);
         }
 
-        window.openModal = (id) => document.getElementById(id).classList.replace('hidden', 'flex');
+        window.openModal = (id) => {
+            document.getElementById(id).classList.replace('hidden', 'flex');
+            document.getElementById('newClientNameInput').focus();
+        };
         window.closeModal = (id) => document.getElementById(id).classList.replace('flex', 'hidden');
 
         window.exportClients = () => {
@@ -315,35 +335,27 @@
             const blob = new Blob([data], {type: 'application/json'});
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
-            a.href = url;
-            a.download = `clients_backup.json`;
-            a.click();
+            a.href = url; a.download = `backup_clientes.json`; a.click();
         };
 
         window.importClients = () => {
-            const fileInput = document.getElementById('importFileInput');
-            const file = fileInput.files[0];
+            const file = document.getElementById('importFileInput').files[0];
             if (!file) return;
-
             const reader = new FileReader();
             reader.onload = async (e) => {
                 try {
                     const imported = JSON.parse(e.target.result);
                     if (Array.isArray(imported)) {
-                        for (const client of imported) {
-                            if (client.name) {
+                        for (const c of imported) {
+                            if (c.name) {
                                 await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'clients'), {
-                                    name: client.name,
-                                    uid: userId || 'imported',
-                                    date: new Date().toISOString()
+                                    name: c.name, uid: userId || 'imported', timestamp: new Date().getTime()
                                 });
                             }
                         }
-                        showToast("Importación completada", "bg-green-600");
+                        showToast("Importación exitosa", "bg-green-600");
                     }
-                } catch (err) {
-                    showToast("Archivo inválido", "bg-red-600");
-                }
+                } catch (err) { showToast("Archivo inválido", "bg-red-600"); }
             };
             reader.readAsText(file);
         };
